@@ -1,0 +1,79 @@
+Module 1 — Text Detection
+What it does: Takes raw text. Returns ai_score (0–1) and scam_score (0–1) with word-level explanations.
+How AI detection works internally:
+Perplexity scoring — you load a pretrained GPT-2. You feed it the text token by token. At each token, you ask: how surprised was the model by this word given what came before? You average the surprises. That average is perplexity. AI text = low perplexity because AI writes predictable, average sentences. Human text = high perplexity because humans write surprising things.
+Burstiness — you compute the standard deviation of sentence lengths. AI writes uniform sentences (all roughly the same length). Humans write short punchy ones then long complex ones then fragments. High burstiness variance = more human.
+Fine-tuned DistilBERT — perplexity and burstiness alone aren't enough. Some humans write predictably, some AI writes with added randomness. So you fine-tune DistilBERT — a 66M parameter transformer — on a labeled dataset of human vs AI text (HC3 dataset on Hugging Face is perfect for this). DistilBERT learns patterns that go beyond surface statistics. It learns that AI overuses certain phrase structures, hedges differently, never has typos.
+You combine all three signals with a weighted average into one final ai_score.
+How scam detection works internally:
+You fine-tune a separate DistilBERT on the SMS Spam Collection + a phishing email dataset. Scam text has specific linguistic fingerprints: urgency words (act now, limited time), impersonation signals (I am your bank), requests for credentials, suspicious link patterns, slightly off grammar from translation. The model learns these.
+SHAP (SHapley Additive exPlanations) — after the model scores the text, SHAP works backwards and computes: how much did each word contribute to this score? Word "urgent" pushed the score up by 0.12. Word "click" pushed it up by 0.08. This is how you get word-level highlighting in the UI.
+What you'll learn: Tokenization, transformer fine-tuning, loss functions, training loops, perplexity as a metric, SHAP attribution, Hugging Face Trainer API, dataset preparation.
+
+Module 2 — Image Detection
+What it does: Takes an image. Returns ai_generated_score with a heatmap overlay showing which regions look artificial.
+How it works internally:
+CNN pipeline — you fine-tune EfficientNet-B0 (a pretrained ImageNet model) on a labeled dataset of real vs AI-generated images (CIFAKE dataset). The model learns to detect the spatial artifacts that diffusion models leave: wrong finger counts, texture repetition, unnatural symmetry, face blending errors. You use the last convolutional layer's activations to generate a GradCAM heatmap — a visual explanation of which regions the model flagged.
+FFT frequency analysis — you apply a 2D Fast Fourier Transform to the image, converting it from pixel space to frequency space. AI-generated images have a specific signature in the frequency domain: they show unnatural periodic patterns at high frequencies because of the upsampling operations in diffusion model decoders. Real photos have smooth, natural frequency falloff. You compute a feature vector from the FFT spectrum and use it as an additional signal.
+CLIP embeddings — you run the image through OpenAI's CLIP model (Vision Transformer) to get a 512-dimensional embedding. AI images cluster together in CLIP embedding space differently from real photos. You use cosine similarity to the centroid of known AI images as a third signal.
+Final score = weighted combination of CNN score + FFT anomaly score + CLIP distance score.
+What you'll learn: CNN architecture, convolutional filters, pooling, transfer learning, GradCAM, Fourier transforms, embedding spaces, cosine similarity, ensemble methods.
+
+Module 3 — Audio Detection
+What it does: Takes audio. Returns voice_clone_score + scam_score on the transcript + a spectrogram visualization.
+How it works internally:
+Whisper transcription — you run OpenAI's Whisper model (a transformer trained on 680K hours of audio) on the audio file. It outputs a text transcript with word-level timestamps. This transcript immediately goes into Module 1 (text detection) for scam scoring. So audio detection is actually audio + text detection together.
+MFCC feature extraction — MFCCs (Mel-Frequency Cepstral Coefficients) are a compact representation of the spectral envelope of a sound. They capture the "texture" of a voice the same way a fingerprint captures the texture of a finger. Real human voices have micro-variations in pitch, breath noise, vocal fry, and glottal stops that AI voice cloners smooth out. You use librosa to extract 40 MFCC coefficients per frame of audio, stacking them into a 2D matrix (time × features) — essentially an image of the voice.
+Spectrogram CNN — you train a CNN on spectrograms (visual representations of audio frequency over time) of real vs AI-cloned voices. The FakeAVCeleb dataset has labeled real and cloned audio. The CNN learns that AI voices have suspiciously clean spectrograms — no background noise, no breathing artifacts, too-perfect formant transitions.
+What you'll learn: Audio processing pipeline, FFT for audio (spectrograms), MFCCs, librosa, ffmpeg for audio extraction, Whisper API, training CNNs on non-image data.
+
+Module 4 — Video Detection
+What it does: Takes a video. Returns deepfake_score per-frame + overall score + a timeline chart + audio analysis.
+How it works internally:
+Frame extraction — you use OpenCV to extract every Nth frame (you don't need every single frame, every 5th is fine for most videos). Each frame is a standard image that goes through Module 2 (image detection). So video detection is Module 2 running in a loop.
+Face detection — before running the full image pipeline, you run a face detector (OpenCV Haar cascades or MediaPipe face detection) to isolate the face region. Deepfake artifacts are concentrated in the face, not the background. Cropping to the face before analysis dramatically improves accuracy.
+Temporal consistency scoring — the key insight: real videos are temporally smooth. The AI score of frame N and frame N+1 should be very similar because nothing dramatic changes between frames. Deepfakes flicker — they show high frame-to-frame variance in AI scores because the face blending is slightly different each frame. You compute the standard deviation of AI scores across the frame sequence. High variance = deepfake signal.
+Lip sync analysis (advanced) — you optionally run a lip sync detector. In real videos, lip movement matches audio. In many deepfakes, lip sync is slightly off. You can detect this by correlating lip movement (extracted via facial landmark detection) with audio phonemes from Whisper's word timestamps.
+Audio track — you extract the audio track with ffmpeg and run it through Module 3.
+Final score = temporal inconsistency score + face-region CNN score + audio clone score, combined.
+What you'll learn: Video as a sequence of images, frame extraction, temporal analysis, face detection, MediaPipe, OpenCV video I/O, how to run ML inference efficiently on many frames.
+
+Module 5 — Document Analysis + RAG
+What it does: Takes a PDF. Simultaneously scores every section for AI/scam content AND indexes the document so you can ask it questions.
+How detection works internally:
+PDF parsing — PyMuPDF extracts text with page and section boundaries preserved. You don't just get raw text — you get structured text that knows which page it came from, which heading it's under.
+Chunk-level detection — each chunk (roughly 500 tokens, overlapping by 50 tokens) goes through Module 1 (text detection). Every chunk gets an ai_score and scam_score. You store these scores alongside the chunk text.
+Document heatmap — you visualize the whole document as a vertical strip where each section is colored by its AI score. Red = highly AI-generated. Green = likely human. The user can click any section to see which specific words triggered the flag.
+How RAG works internally:
+Embedding — each chunk is converted to a 384-dimensional dense vector using sentence-transformers/all-MiniLM-L6-v2. This model was trained specifically to make semantically similar text produce similar vectors. "Payment terms" and "when do I pay?" will have vectors close to each other in 384-dimensional space.
+ChromaDB storage — vectors are stored in ChromaDB, a local vector database. Each vector is stored with its metadata: page number, AI score, scam score, original text.
+Query pipeline — user types a question. The question is also embedded into a 384-dimensional vector. ChromaDB computes cosine similarity between the query vector and all chunk vectors. Top 5 most similar chunks are retrieved.
+Reranking — raw similarity isn't always enough. You run a cross-encoder reranker (a small BERT model that scores query-chunk pairs for relevance) on the top 10 chunks to reorder them more accurately. This improves answer quality significantly.
+LLM answer generation — the top 3 chunks after reranking are passed to Claude/GPT as context. The prompt says: "Answer the question using only the provided context. Cite which section each piece of information came from." Answer is streamed back token by token via WebSocket.
+Detection-aware RAG — because you stored AI scores as metadata in ChromaDB, you can ask questions like "show me the most AI-written sections" and it queries ChromaDB filtered by ai_score > 0.8. The chat and the detection are fully integrated.
+What you'll learn: PDF parsing, chunking strategies (size, overlap, semantic), vector embeddings, cosine similarity, ChromaDB, cross-encoder reranking, LLM prompting, streaming responses, metadata filtering in vector search.
+
+Module 6 — Backend Infrastructure
+What it does: Ties all 5 modules together into a production-grade API.
+FastAPI routing — each module is a separate router (/analyze/text, /analyze/image, etc.). FastAPI uses Python type hints to automatically validate inputs and generate API documentation at /docs. You don't write validation code — Pydantic models handle it.
+Async processing — text detection is fast (under 1 second) so it runs synchronously. Video analysis on a 2-minute video might take 3 minutes, so it runs asynchronously. Celery is a task queue: the endpoint immediately returns a job_id, and Celery processes the video in the background. The frontend polls /jobs/{job_id}/status or connects via WebSocket to get live progress updates.
+WebSocket progress — for long-running jobs, a WebSocket connection sends real-time updates: {"status": "processing", "progress": 0.45, "message": "Analyzed 45 of 100 frames"}. The React frontend shows a live progress bar.
+Redis — serves two purposes. It's Celery's message broker (job queue) and its result backend (where completed job results are stored temporarily).
+What you'll learn: FastAPI architecture, async Python, Celery workers, Redis, WebSocket protocol, background task patterns, API error handling.
+
+Module 7 — Frontend
+What it does: Clean React dashboard with 6 input modes, real-time results, explainability visualizations, and a RAG chat panel.
+This is the last thing you build. Each page is simple: an upload/input area, a submit button, and a results panel. The complexity is in the results visualization — confidence bars, word highlighting for text, GradCAM heatmap overlay for images, frame-by-frame score timeline for video, document heatmap + chat panel for documents.
+You'll learn React state management, API calls from the frontend, WebSocket client in React, streaming text rendering (token by token), file upload handling, and basic data visualization with a charting library.
+
+That's the complete picture — every module, every algorithm, every concept, nothing glossed over.
+The order you build them:
+Week 1 → Module 1 (text) + Module 6 basics (FastAPI)
+Week 2 → Module 7 basics (React UI for text)
+Week 3 → Module 2 (image)
+Week 4 → Module 3 + 4 (audio + video)
+Week 5 → Module 5 (document RAG)
+Week 6 → Module 6 advanced (async, WebSockets, Redis)
+Week 7 → Module 7 advanced (heatmaps, streaming, polish)
+Week 8 → Docker + deploy
+Ready to write the actual Week 1 code now — main.py and explore.ipynb with every line explained?
